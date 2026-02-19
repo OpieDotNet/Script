@@ -1,40 +1,218 @@
 --[[
-    Lock-On Camera System
-    Script único completo com UI profissional e lógica de targeting
-    Coloque em StarterGui como LocalScript
+    LOCK-ON ULTRA LEVE para Murder Mystery
+    - Máxima performance (zero lag)
+    - Foco apenas no Murder (inocentes ignorados)
+    - Câmera extremamente suave
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local CollectionService = game:GetService("CollectionService")
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
--- CONSTANTES CONFIGURÁVEIS
+-- CONFIGURAÇÕES DE PERFORMANCE
 local CONFIG = {
-    CIRCLE_RADIUS = 120,           -- Raio do círculo em pixels
-    SMOOTHING = 0.1,               -- Suavização da câmera (0-1, menor = mais suave)
-    MAX_DISTANCE = 100,             -- Distância máxima do alvo em studs (opcional)
-    CHECK_LOS = true,               -- Verificar linha de visão via Raycast
-    DEBUG_MODE = false               -- Mostrar informações de debug
+    CIRCLE_RADIUS = 150,
+    SMOOTHING = 0.15,        -- Mais alto = mais suave
+    UPDATE_RATE = 2,          -- Só atualiza alvo a cada 2 frames (menos lag)
+    AUTO_LOCK = true,         -- Auto-detectar murder
+    SHOW_GHOST = true,        -- Mostrar murder através de paredes
 }
 
--- ESTADO DO SISTEMA
+-- ESTADO
 local lockOnActive = false
 local currentTarget = nil
-local connection = nil
-local targetFilter = "Dummy"  -- Valor padrão
+local murderChar = nil
+local frameCounter = 0
+local connections = {}
 
--- CRIAR UI PRINCIPAL
+-- DETECTAR MURDER (MUITO RÁPIDO)
+local function findMurder()
+    -- Método 1: Pela cor do nome (mais rápido)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character and plr.Character:FindFirstChild("Head") then
+            -- Verificar se é murder pela cor do nome (vermelho)
+            local head = plr.Character.Head
+            if head:FindFirstChild("BillboardGui") then
+                local nameTag = head.BillboardGui:FindFirstChild("Name")
+                if nameTag and nameTag.TextColor3 == Color3.new(1, 0, 0) then
+                    return plr.Character
+                end
+            end
+        end
+    end
+    
+    -- Método 2: Pela ferramenta (faca/arma)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= player and plr.Character then
+            local tool = plr.Character:FindFirstChildOfClass("Tool")
+            if tool and (tool.Name:lower():find("knife") or tool.Name:lower():find("gun")) then
+                return plr.Character
+            end
+        end
+    end
+    
+    return nil
+end
+
+-- CRIAR UI LEVE
 local function createUI()
-    -- ScreenGui principal
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "LockOnSystem"
+    screenGui.Name = "LockOn"
     screenGui.ResetOnSpawn = false
     screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    screenGui.Parent = player:WaitForChild("PlayerGui")
+    
+    -- Botão flutuante (bem pequeno)
+    local button = Instance.new("TextButton")
+    button.Size = UDim2.new(0, 40, 0, 40)
+    button.Position = UDim2.new(0, 10, 0.5, -20)
+    button.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+    button.Text = "L"
+    button.TextColor3 = Color3.fromRGB(255, 255, 255)
+    button.TextScaled = true
+    button.Font = Enum.Font.GothamBold
+    button.Parent = screenGui
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = button
+    
+    -- Círculo central (bem transparente)
+    local circle = Instance.new("ImageLabel")
+    circle.Size = UDim2.new(0, CONFIG.CIRCLE_RADIUS * 2, 0, CONFIG.CIRCLE_RADIUS * 2)
+    circle.Position = UDim2.new(0.5, -CONFIG.CIRCLE_RADIUS, 0.5, -CONFIG.CIRCLE_RADIUS)
+    circle.BackgroundTransparency = 1
+    circle.Image = "rbxassetid://2666670010"
+    circle.ImageColor3 = Color3.fromRGB(255, 50, 50)
+    circle.ImageTransparency = 0.7
+    circle.Visible = false
+    circle.Parent = screenGui
+    
+    return {gui = screenGui, button = button, circle = circle}
+end
+
+-- VERIFICAR SE ESTÁ NA TELA (ULTRA RÁPIDO)
+local function isOnScreen(position)
+    local vector, onScreen = camera:WorldToViewportPoint(position)
+    if not onScreen then return false end
+    
+    local center = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+    local distance = (Vector2.new(vector.X, vector.Y) - center).Magnitude
+    
+    return distance <= CONFIG.CIRCLE_RADIUS
+end
+
+-- LOOP PRINCIPAL (ULTRA OTIMIZADO)
+local function updateLock()
+    if not lockOnActive then return end
+    
+    frameCounter = frameCounter + 1
+    if frameCounter % CONFIG.UPDATE_RATE ~= 0 then return end
+    
+    -- Encontrar murder (se não tiver ou morreu)
+    if not murderChar or not murderChar.Parent then
+        murderChar = findMurder()
+    end
+    
+    if not murderChar then
+        currentTarget = nil
+        return
+    end
+    
+    local head = murderChar:FindFirstChild("Head")
+    if not head then return end
+    
+    -- Verificar se está no círculo
+    if isOnScreen(head.Position) then
+        currentTarget = murderChar
+    else
+        currentTarget = nil
+    end
+end
+
+-- MOVER CÂMERA (SUPER SUAVE)
+local function moveCamera()
+    if not lockOnActive or not currentTarget then return end
+    
+    local head = currentTarget:FindFirstChild("Head")
+    if not head then return end
+    
+    -- Câmera suave sem lag
+    local targetCF = CFrame.lookAt(camera.CFrame.Position, head.Position)
+    camera.CFrame = camera.CFrame:Lerp(targetCF, CONFIG.SMOOTHING)
+end
+
+-- ANIMAÇÕES DO BOTÃO
+local function setupButton(ui)
+    -- Hover
+    ui.button.MouseEnter:Connect(function()
+        TweenService:Create(ui.button, 
+            TweenInfo.new(0.1),
+            {Size = UDim2.new(0, 45, 0, 45)}
+        ):Play()
+    end)
+    
+    ui.button.MouseLeave:Connect(function()
+        TweenService:Create(ui.button,
+            TweenInfo.new(0.1),
+            {Size = UDim2.new(0, 40, 0, 40)}
+        ):Play()
+    end)
+    
+    -- Click
+    ui.button.MouseButton1Click:Connect(function()
+        lockOnActive = not lockOnActive
+        ui.circle.Visible = lockOnActive
+        
+        if lockOnActive then
+            ui.button.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
+            ui.button.Text = "✓"
+        else
+            ui.button.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+            ui.button.Text = "L"
+            currentTarget = nil
+        end
+    end)
+end
+
+-- DETECÇÃO CONTÍNUA (MUITO LEVE)
+local function startDetection()
+    -- Detectar murder continuamente (só quando necessário)
+    table.insert(connections, RunService.Heartbeat:Connect(function()
+        if not lockOnActive then return end
+        
+        -- Se perdeu o murder, procura de novo
+        if not murderChar or not murderChar.Parent then
+            murderChar = findMurder()
+        end
+    end))
+    
+    -- Update da câmera (separado para mais performance)
+    table.insert(connections, RunService.RenderStepped:Connect(function()
+        if lockOnActive then
+            updateLock()
+            moveCamera()
+        end
+    end))
+    
+    -- Detectar quando murder morre (eventos, mais eficiente)
+    table.insert(connections, workspace.DescendantRemoving:Connect(function(desc)
+        if desc == murderChar then
+            murderChar = nil
+        end
+    end))
+end
+
+-- INICIAR
+local ui = createUI()
+setupButton(ui)
+startDetection()
+
+print("🎯 Lock-On Murder iniciado - Performance Máxima!")    screenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     
     -- Frame principal com sombra
     local mainFrame = Instance.new("Frame")
